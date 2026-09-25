@@ -28,6 +28,9 @@ Column {
   property string syncState: "missing"
   property string setupCommand: ""
   property bool setupCommandCopied: false
+  // True when the events file lists a calendar the panel may write to.
+  property bool canWrite: false
+  property bool writeSetupCopied: false
 
   signal calendarToggled(string calendarId)
   signal yearProgressToggled()
@@ -36,6 +39,7 @@ Column {
   signal hideDeclinedToggled()
   signal leadMinutesPicked(int minutes)
   signal setupCommandCopyRequested()
+  signal writeSetupCopyRequested()
 
   // Same fade as Panel.quiet(): Qt.darker only reads as quieter on a dark
   // background, and on a light theme it raises contrast instead.
@@ -189,6 +193,19 @@ Column {
     hint: qsTr("Shown struck through when on")
     checked: !root.hideDeclined
     onActivated: root.hideDeclinedToggled()
+  }
+
+  // The panel cannot turn writing on by itself: it needs a Google sign-in
+  // in a terminal. So the row shows the state and hands over the command.
+  ToggleRow {
+    label: qsTr("Create and edit events")
+    hint: root.canWrite
+      ? qsTr("On")
+      : root.writeSetupCopied
+        ? qsTr("Copied. Paste it in a terminal")
+        : qsTr("Off. Click to copy the command that turns it on")
+    checked: root.canWrite
+    onActivated: if (!root.canWrite) root.writeSetupCopyRequested()
   }
 
   ToggleRow {

@@ -618,8 +618,230 @@ function syncState(doc, nowMs, intervalSeconds) {
   return (nowMs - syncedMs) > thresholdMs ? "stale" : "ok"
 }
 
+// ---- Writing. The sync decides what the panel may change: a calendar is
+//      writable only when it is in the file's writableCalendars list.
+
+function isWritable(event, writableCalendars) {
+  if (!event || !writableCalendars || !writableCalendars.length) return false
+  for (var i = 0; i < writableCalendars.length; i++)
+    if (writableCalendars[i] && writableCalendars[i].id === event.calendarId) return true
+  return false
+}
+
+function clockText(minutes) {
+  var h = Math.floor(minutes / 60) % 24
+  var m = minutes % 60
+  return (h < 10 ? "0" : "") + h + ":" + (m < 10 ? "0" : "") + m
+}
+
+// Today: the next half hour. Another day: 09:00. Always 30 minutes, and
+// never past midnight, so the default always saves.
+function defaultFormTimes(dateKeyText, now) {
+  var start = 9 * 60
+  if (String(dateKeyText) === keyForDate(now)) {
+    var minutes = now.getHours() * 60 + now.getMinutes()
+    start = Math.min(Math.ceil((minutes + 1) / 30) * 30, 23 * 60 + 30)
+  }
+  return { start: clockText(start), end: clockText(start + 30) }
+}
+
+// For running a file next to this one. commandPathFromUrl shortens to ~
+// for display; a process needs the real absolute path.
+function localPathFromUrl(fileUrl) {
+  var text = String(fileUrl || "")
+  if (text.indexOf("file://") === 0) text = text.substring(7)
+  return decodeURIComponent(text)
+}
+
+// The event command's reply. `event` is the form a get returns, null for
+// a write.
+function parseWriteReply(text) {
+  try {
+    var reply = JSON.parse(String(text || "").trim())
+    if (reply && reply.ok === true) return { ok: true, error: "", event: reply.event || null }
+    if (reply && typeof reply.error === "string") return { ok: false, error: reply.error, event: null }
+  } catch (error) {}
+  return {
+    ok: false,
+    error: "The event command failed: " + (String(text || "").slice(0, 200) || "no output"),
+    event: null
+  }
+}
+
+// The form for a new event. Same shape as the one the event command's get
+// returns (see sync/omarchy_calendar_sync/event_form.py), with Google's
+// defaults. An end at "00:00" keeps the same end date: the command reads it
+// as that midnight.
+function newEventForm(dateKeyText, times, calendarId) {
+  return {
+    calendarId: calendarId, eventId: "", recurringEventId: "",
+    title: "", allDay: false,
+    startDate: dateKeyText, startTime: times.start,
+    endDate: dateKeyText, endTime: times.end,
+    location: "", description: "",
+    guests: [], meet: false, meetUrl: "",
+    repeat: "none", rrule: [],
+    reminders: { useDefault: true, overrides: [] },
+    busy: true, visibility: "default", colorId: "",
+    guestsCanModify: false, guestsCanInviteOthers: true, guestsCanSeeOtherGuests: true
+  }
+}
+
+// The guests who would get an email: everyone but the calendar's owner.
+function otherGuests(form) {
+  var me = normalizeEmail(form.calendarId)
+  var out = []
+  var guests = form.guests || []
+  for (var i = 0; i < guests.length; i++)
+    if (normalizeEmail(guests[i].email) !== me) out.push(guests[i])
+  return out
+}
+
+// ---- The event form's option lists. Labels are English, like the rest
+//      of the panel; the time labels come from the caller's format.
+
+var WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+var MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"]
+var ORDINALS = { 1: "first", 2: "second", 3: "third", 4: "fourth", "-1": "last" }
+
+function durationLabel(minutes) {
+  if (minutes < 60) return minutes + " min"
+  var hours = Math.floor(minutes / 60)
+  var rest = minutes % 60
+  return hours + " h" + (rest ? " " + (rest < 10 ? "0" : "") + rest : "")
+}
+
+// The start menu: every 15 minutes of the day. The end menu (fromMinutes is
+// the start): from 15 minutes after the start up to midnight, with the
+// duration, as Google shows it. "00:00" at the end means that midnight.
+function timeOptions(fromMinutes, formatTime, withDuration) {
+  var options = []
+  var first = fromMinutes < 0 ? 0 : fromMinutes + 15
+  var last = fromMinutes < 0 ? 23 * 60 + 45 : 24 * 60
+  for (var m = first; m <= last; m += 15) {
+    var value = clockText(m)
+    var label = formatTime(value)
+    if (withDuration && fromMinutes >= 0) label += " (" + durationLabel(m - fromMinutes) + ")"
+    options.push({ value: value, label: label })
+  }
+  return options
+}
+
+function partsOfKey(key) {
+  var parts = String(key).split("-")
+  return { year: Number(parts[0]), month: Number(parts[1]) - 1, day: Number(parts[2]) }
+}
+
+// Which weekday of its month a date is: 1 to 4, or -1 in the last 7 days.
+// Kept in step with event_form.nth_weekday on the Python side.
+function nthWeekday(key) {
+  var p = partsOfKey(key)
+  var daysInMonth = new Date(p.year, p.month + 1, 0).getDate()
+  var weekday = new Date(p.year, p.month, p.day).getDay()
+  return { n: p.day + 7 > daysInMonth ? -1 : Math.floor((p.day - 1) / 7) + 1, weekday: weekday }
+}
+
+function repeatOptions(key) {
+  var p = partsOfKey(key)
+  var nth = nthWeekday(key)
+  var weekdayName = WEEKDAY_NAMES[nth.weekday]
+  return [
+    { value: "none", label: "Does not repeat" },
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly on " + weekdayName },
+    { value: "monthly", label: "Monthly on the " + ORDINALS[String(nth.n)] + " " + weekdayName },
+    { value: "yearly", label: "Annually on " + MONTH_NAMES[p.month] + " " + p.day },
+    { value: "weekdays", label: "Every weekday (Monday to Friday)" }
+  ]
+}
+
+function normalizeEmail(text) {
+  return String(text || "").trim().toLowerCase()
+}
+
+function isValidEmail(text) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(text || ""))
+}
+
+// Suggestions for the guest field, in the sync's order (most frequent
+// first): the email contains the text, or a word of the name starts with it.
+function matchGuests(suggestions, text, guests, limit) {
+  var query = normalizeEmail(text)
+  if (!query) return []
+  var taken = {}
+  for (var g = 0; g < (guests || []).length; g++) taken[normalizeEmail(guests[g].email)] = true
+  var out = []
+  var list = suggestions || []
+  for (var i = 0; i < list.length && out.length < (limit || 5); i++) {
+    var email = normalizeEmail(list[i].email)
+    if (taken[email]) continue
+    var words = String(list[i].name || "").toLowerCase().split(/\s+/)
+    var byName = false
+    for (var w = 0; w < words.length; w++) if (words[w] && words[w].indexOf(query) === 0) byName = true
+    if (email.indexOf(query) >= 0 || byName) out.push(list[i])
+  }
+  return out
+}
+
+// Returns the same array when nothing was added, so the caller can tell.
+function addGuest(guests, text) {
+  var email = normalizeEmail(text)
+  if (!isValidEmail(email)) return guests
+  for (var i = 0; i < guests.length; i++)
+    if (normalizeEmail(guests[i].email) === email) return guests
+  return guests.concat([{ email: email, optional: false, responseStatus: "needsAction", organizer: false }])
+}
+
+// Google's event colours, from `colors get` (the "event" section).
+var EVENT_COLORS = [
+  { id: "1", color: "#a4bdfc" }, { id: "2", color: "#7ae7bf" }, { id: "3", color: "#dbadff" },
+  { id: "4", color: "#ff887c" }, { id: "5", color: "#fbd75b" }, { id: "6", color: "#ffb878" },
+  { id: "7", color: "#46d6db" }, { id: "8", color: "#e1e1e1" }, { id: "9", color: "#5484ed" },
+  { id: "10", color: "#51b749" }, { id: "11", color: "#dc2127" }
+]
+
+// The notification menu offers one popup at a fixed lead. Anything else an
+// event already has (two reminders, an email, 2 weeks before) shows as
+// "custom" and is sent back untouched unless the user picks another value.
+var REMINDER_MINUTES = [5, 10, 30, 60, 1440]
+
+function reminderChoice(reminders) {
+  var r = reminders || { useDefault: true }
+  if (r.useDefault !== false) return "default"
+  var overrides = r.overrides || []
+  if (overrides.length === 0) return "none"
+  if (overrides.length === 1 && overrides[0].method === "popup"
+      && REMINDER_MINUTES.indexOf(Number(overrides[0].minutes)) >= 0)
+    return String(overrides[0].minutes)
+  return "custom"
+}
+
+function remindersFor(choice) {
+  if (choice === "default") return { useDefault: true, overrides: [] }
+  if (choice === "none") return { useDefault: false, overrides: [] }
+  return { useDefault: false, overrides: [{ method: "popup", minutes: Number(choice) }] }
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
+    EVENT_COLORS: EVENT_COLORS,
+    newEventForm: newEventForm,
+    otherGuests: otherGuests,
+    reminderChoice: reminderChoice,
+    remindersFor: remindersFor,
+    durationLabel: durationLabel,
+    timeOptions: timeOptions,
+    nthWeekday: nthWeekday,
+    repeatOptions: repeatOptions,
+    normalizeEmail: normalizeEmail,
+    isValidEmail: isValidEmail,
+    addGuest: addGuest,
+    matchGuests: matchGuests,
+    isWritable: isWritable,
+    defaultFormTimes: defaultFormTimes,
+    localPathFromUrl: localPathFromUrl,
+    parseWriteReply: parseWriteReply,
     dateKey: dateKey,
     keyForDate: keyForDate,
     normalizedWeekStart: normalizedWeekStart,

@@ -1,7 +1,8 @@
 # Calendar for Omarchy
 
 **Your Google Calendar, in your Omarchy bar.** A month view with your real
-events on it, and a bar that tells you what is coming before it starts.
+events on it, a bar that tells you what is coming before it starts, and a
+form to create or edit events without opening Google.
 
 Not a Google user? It reads a plain JSON file, so khal, vdirsyncer, Nextcloud
 or an ICS feed work just as well. See [Use another source](#use-another-source).
@@ -21,17 +22,26 @@ time away for an event title would be a downgrade you pay for all day.
 
 - Month grid with ISO week numbers, coloured dots per calendar
 - The selected day's agenda under the grid, click any day to see it
-- The next event today, with a live countdown, in the panel header
+- Today's agenda reads as a timeline: a line at the current time, past events
+  faded, the event in progress highlighted, and a countdown on the next one
+- Create, edit and delete events from the panel (press `n`), with a form like
+  Google's: date picker, times in 15-minute steps, repeat, guests with
+  suggestions, Google Meet, notifications, colour. Off by default, see
+  [Create and edit events](#create-and-edit-events)
 - The bar label announces what is next, minutes before it starts
 - A **Join** button on meetings that have a video link, shown only from 15
   minutes before the start until 15 minutes after the end
 - Clicking any event opens it in your calendar
-- Per-calendar visibility, week start, and countdown lead time in a settings page
+- Per-calendar visibility, week start, countdown lead time and a 24 h or 12 h
+  time format
 - Google's working-location markers hidden by default, declined invitations
   struck through
 - Everything the built-in Omarchy clock does: label formats, right click to
   cycle them, the year and life progress bars if you want them back
-- Theme aware, because it is a fork of the built-in clock
+- Theme aware, light themes included, because it is a fork of the built-in clock
+- No Google Cloud project needed if you read your calendars through
+  Evolution Data Server (community-maintained), or any other source that
+  writes the events file
 
 ## Requirements
 
@@ -117,6 +127,44 @@ Two of those steps are traps, and the script says so at the time:
 
 When it finishes, events land in `~/.local/state/omarchy/calendar-events.json`
 every five minutes and the widget picks them up without a restart.
+
+## Create and edit events
+
+Off by default. Turn it on and the panel gets a **+** next to the day's
+agenda (or press `n`), and a pencil and a trash can when you hover one of
+your own events.
+
+It needs one more Google scope, `calendar.events`. That scope can see and
+edit events. It cannot change sharing or delete a calendar.
+
+New setup: answer yes when `sync/setup` asks, or run `sync/setup --write`.
+
+Already set up:
+
+1. In the Cloud Console, under **Data Access**, add `calendar.events` next to `calendar.readonly`.
+2. Log in again with both scopes. The `rm` drops the cached token, which gws
+   would keep serving without the new scope:
+
+   ```bash
+   rm -f ~/.config/gws-omarchy-calendar/token_cache.json
+   GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-omarchy-calendar gws auth login \
+     --scopes https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/calendar.events
+   ```
+
+3. Set `"write": true` in `~/.config/omarchy/calendar-sync.json`.
+
+Only calendars you own or can edit get the pencil and the trash can. The
+form follows Google's: start and end dates with a date picker, times in
+15-minute steps in your `eventTimeFormat`, all day, repeat, guests, Google
+Meet, location and description. Under "More options": notifications, busy
+or free, visibility, colour and guest permissions.
+
+With guests, the panel asks whether to send invitation emails. For a
+recurring event, it asks whether the change is for this event or all
+events. To move an event to another calendar, use Google Calendar. A repeat rule the menu cannot show, or a notification it has no
+entry for, stays as it is unless you pick another one.
+
+The EDS backend cannot write yet, so the panel shows none of this there.
 
 ## Sync without a Google Cloud project
 
@@ -230,7 +278,7 @@ a shell script, a cron job of your own. No credentials, no network, no `gws`.
 }
 ```
 
-These four extra fields are optional. Omit them and everything still works:
+These extra fields are optional. Omit them and everything still works:
 
 | Field | Effect |
 |---|---|
@@ -238,6 +286,10 @@ These four extra fields are optional. Omit them and everything still works:
 | `eventUrl` | Clicking the row opens this. Must be `https` |
 | `eventType` | `workingLocation` is hidden by default, `outOfOffice` is labelled |
 | `responseStatus` | `declined` is struck through, and can be hidden entirely |
+
+A top-level `writableCalendars` list (`id`, `name`, `color`) turns on the
+panel's edit buttons for those calendars. Only the bundled sync should write
+it: the panel sends its edits to the bundled event command, not to your writer.
 
 Rules a writer has to follow:
 
@@ -305,6 +357,8 @@ systemctl --user list-timers omarchy-calendar-sync.timer
 | `403 insufficient scopes` | The calendar scope was never granted. Check `gws auth status`; if it only lists `openid` and `email`, declare the scope under Data Access in the console, then run `sync/setup` again |
 | `401 invalid_grant` | The refresh token expired. Almost always an app left in Testing, which caps refresh tokens at seven days. Publish it, then log in again |
 | `gws is not installed or not on PATH` from the timer, but it works in your terminal | `gwsPath` is not absolute. `sync/setup` writes it for you |
+| "Write access not granted" in the event form | The token has no `calendar.events` scope. See [Create and edit events](#create-and-edit-events) |
+| "Google refused the change: Shared properties can only be changed by the organizer" | The event is an invitation. Only its organizer can change its title, time or guests. Your own colour, notification and busy or free still change |
 | `cannot parse gws version` from the timer, with `exec: node: not found` | `gwsPath` is absolute but points at an npm wrapper that needs node on your shell PATH. With mise, use its shim: `~/.local/share/mise/shims/gws`. `sync/setup` checks this and records the shim for you |
 | `Not in a workspace` during setup, or setup says gws is not the Google Workspace CLI | Another program named `gws` comes first on your PATH, for example the git workspace helper. Pass the right one: `GWS=/absolute/path/to/gws sync/setup` |
 | The panel says "No calendar synced yet" | The events file does not exist. The sync has never completed |
