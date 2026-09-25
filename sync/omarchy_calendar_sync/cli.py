@@ -10,8 +10,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import config as config_module
+from . import suggestions as suggestions_module
 from . import contract, normalize
-from .gws import Gws, GwsError
+from .errors import SyncError
+from .gws import Gws
 
 EXIT_OK = 0
 EXIT_SYNC_FAILED = 1
@@ -142,24 +144,38 @@ def run(client, cfg, now, out_path, local_tz):
 
         rows = []
         seen = set()
+        fetched = []
         for calendar in calendars:
             raw = client.events(calendar["id"], time_min, time_max)
             fresh = _drop_duplicates(raw, seen)
+            fetched.extend(fresh)
             rows.extend(normalize.normalize_all(fresh, calendar, local_tz))
 
-        source = "gws/" + ".".join(str(part) for part in client.version())
-    except GwsError as error:
-        print(f"sync failed: {error}", file=sys.stderr)
-        print(
-            "if this is an auth error, run: "
-            "GOOGLE_WORKSPACE_CLI_CONFIG_DIR=" + str(cfg["profile"]) + " "
-            "gws auth login --scopes https://www.googleapis.com/auth/calendar.readonly",
-            file=sys.stderr,
+        source = client.SOURCE_NAME + "/" + ".".join(
+            str(part) for part in client.version()
         )
+    except SyncError as error:
+        print(f"sync failed: {error}", file=sys.stderr)
+        hint = client.auth_hint(cfg)
+        if hint:
+            print(hint, file=sys.stderr)
         return EXIT_SYNC_FAILED
 
     rows.sort(key=lambda row: (row["dateKey"], row["start"], row["title"]))
-    doc = contract.build_document(rows, now.isoformat(), source)
+    # The panel offers edits only for these. Only when the user turned
+    # writing on and the backend can write; otherwise the key is absent.
+    writable = []
+    if cfg.get("write") and getattr(client, "can_write", False):
+        writable = [
+            {"id": c["id"], "name": c["name"], "color": c["color"]}
+            for c in calendars
+            if c.get("writable")
+        ]
+    # Only for the event form, so only when writing is on.
+    guests = []
+    if writable:
+        guests = suggestions_module.guest_suggestions(fetched, [c["id"] for c in calendars])
+    doc = contract.build_document(rows, now.isoformat(), source, writable, guests)
 
     problems = contract.validate(doc)
     if problems:
@@ -170,6 +186,20 @@ def run(client, cfg, now, out_path, local_tz):
     write_atomic(out_path, doc)
     print(f"wrote {len(rows)} rows from {len(calendars)} calendars to {out_path}")
     return EXIT_OK
+
+
+def build_client(cfg):
+    """The calendar source named by the config."""
+    backend = str(cfg.get("backend") or "gws").strip().lower()
+    if backend == "gws":
+        return Gws(cfg["profile"], binary=cfg["gwsPath"])
+    if backend == "eds":
+        from .eds import Eds
+
+        return Eds(identity=cfg.get("identity", ""))
+    raise config_module.ConfigError(
+        "unknown backend %r; expected \"gws\" or \"eds\"" % backend
+    )
 
 
 def main(argv=None):
@@ -191,7 +221,13 @@ def main(argv=None):
     now = datetime.now(timezone.utc)
     local_tz = resolve_local_timezone()
 
-    return run(Gws(cfg["profile"], binary=cfg["gwsPath"]), cfg, now, out_path, local_tz)
+    try:
+        client = build_client(cfg)
+    except config_module.ConfigError as error:
+        print(f"config error: {error}", file=sys.stderr)
+        return EXIT_BAD_CONFIG
+
+    return run(client, cfg, now, out_path, local_tz)
 
 
 if __name__ == "__main__":
