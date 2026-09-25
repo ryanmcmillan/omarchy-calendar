@@ -227,6 +227,19 @@ Panel {
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // De-emphasis that survives a light theme. Qt.darker on the foreground only
+  // reads as "quieter" while the background is darker than the text; against a
+  // light background it raises contrast instead, so on a light theme every
+  // receding element here stopped receding -- week numbers, weekday headings,
+  // the month label, out-of-month days, weekends and declined invitations all
+  // came forward rather than back. Fading the foreground toward whatever sits
+  // behind it is the one form that works in both directions.
+  //
+  // `amount` is an opacity: 1.0 is the plain foreground, lower is quieter.
+  function quiet(amount) {
+    return Qt.rgba(contentForeground.r, contentForeground.g, contentForeground.b, amount)
+  }
+
   readonly property int cellWidth: Style.space(52)
   readonly property int cellHeight: Style.space(34)
   readonly property int cellSpacing: Style.space(2)
@@ -504,12 +517,44 @@ Panel {
           //      it is also the way home — clicking the date you are
           //      looking for beats hunting for a reset button.
           Item {
+            id: hero
             width: parent.width
             height: heroRow.height
+
+            // Decorative, and deliberately outside the Style.font.* scale.
+            // The icon is sized to read at the cap height of the date.
+            readonly property int iconPixelSize: 48
+            readonly property int datePixelSize: 52
+
+            // The row is centred, so it has to clear the settings button on
+            // both sides. A long date in a wide font ("September 12" in some
+            // monospace fonts) ran under the button, so shrink both glyphs
+            // together until the row fits. The spacing stays fixed.
+            readonly property real availableWidth: width - 2 * (settingsButton.width + Style.space(8))
+            readonly property real naturalGlyphWidth: heroIconMetrics.advanceWidth + heroDateMetrics.advanceWidth
+            readonly property real fit: naturalGlyphWidth > 0
+              ? Math.max(0.4, Math.min(1, (availableWidth - heroRow.spacing) / naturalGlyphWidth))
+              : 1
+
+            TextMetrics {
+              id: heroIconMetrics
+              text: heroIcon.text
+              font.family: root.contentFontFamily
+              font.pixelSize: hero.iconPixelSize
+            }
+
+            TextMetrics {
+              id: heroDateMetrics
+              text: heroDate.text
+              font.family: root.contentFontFamily
+              font.pixelSize: hero.datePixelSize
+              font.bold: true
+            }
 
             // Sits in the hero's right margin rather than in the row itself,
             // so turning it on and off never shifts the date off centre.
             PanelActionButton {
+              id: settingsButton
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               iconText: root.settingsOpen ? "󰅖" : "󰒓"
@@ -525,6 +570,7 @@ Panel {
               spacing: Style.space(22)
 
               Text {
+                id: heroIcon
                 // Baseline-aligned, not center-aligned: "July 26" carries a
                 // descender, so centering the two boxes leaves the icon
                 // sitting visibly low against the digits.
@@ -534,10 +580,7 @@ Panel {
                   ? Style.hoverStateColor(root.contentForeground, Color.accent)
                   : root.contentForeground
                 font.family: root.contentFontFamily
-                // Decorative, and deliberately outside the Style.font.*
-                // scale. Sized so the glyph reads at the cap height of the
-                // date beside it rather than towering over it.
-                font.pixelSize: 48
+                font.pixelSize: Math.floor(hero.iconPixelSize * hero.fit)
               }
 
               Text {
@@ -548,7 +591,7 @@ Panel {
                   ? Style.hoverStateColor(root.contentForeground, Color.accent)
                   : root.contentForeground
                 font.family: root.contentFontFamily
-                font.pixelSize: 52
+                font.pixelSize: Math.floor(hero.datePixelSize * hero.fit)
                 font.bold: true
               }
             }
@@ -614,10 +657,14 @@ Panel {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   width: parent.width - Style.space(70)
+                  // Supplied by whoever sent the invitation, so never rich
+                  // text: Qt's default AutoText parses markup out of a summary
+                  // and fetches any resource it names.
+                  textFormat: Text.PlainText
                   text: root.upcomingEvent ? root.upcomingEvent.title : qsTr("Nothing else today")
                   color: root.upcomingEvent
                     ? root.contentForeground
-                    : Qt.darker(root.contentForeground, 1.9)
+                    : root.quiet(0.50)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
                   elide: Text.ElideRight
@@ -626,7 +673,7 @@ Panel {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.upcomingCountdown
-                  color: Qt.darker(root.contentForeground, 1.4)
+                  color: root.quiet(0.72)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
                 }
@@ -641,7 +688,7 @@ Panel {
                 Text {
                   anchors.verticalCenter: parent.verticalCenter
                   text: "BORN"
-                  color: Qt.darker(root.contentForeground, 1.5)
+                  color: root.quiet(0.68)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
                   font.letterSpacing: 1
@@ -664,7 +711,7 @@ Panel {
                   anchors.verticalCenterOffset: 0
                   leftPadding: Style.space(6)
                   text: "LIVE TO"
-                  color: Qt.darker(root.contentForeground, 1.5)
+                  color: root.quiet(0.68)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
                   font.letterSpacing: 1
@@ -689,7 +736,7 @@ Panel {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: root.today.getFullYear()
-                color: Qt.darker(root.contentForeground, 1.5)
+                color: root.quiet(0.68)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.letterSpacing: 1
@@ -749,7 +796,7 @@ Panel {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 text: "LIFE"
-                color: Qt.darker(root.contentForeground, 1.5)
+                color: root.quiet(0.68)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.bodySmall
                 font.letterSpacing: 1
@@ -850,7 +897,7 @@ Panel {
                     text: "W"
                     color: weekStartMouse.containsMouse
                       ? Style.hoverStateColor(root.contentForeground, Color.accent)
-                      : Qt.darker(root.contentForeground, 1.9)
+                      : root.quiet(0.50)
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.caption
                     font.letterSpacing: 1
@@ -887,7 +934,7 @@ Panel {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     text: root.weekdayLabel(modelData)
-                    color: Qt.darker(root.contentForeground, 1.5)
+                    color: root.quiet(0.68)
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.caption
                     font.letterSpacing: 1
@@ -909,7 +956,7 @@ Panel {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.week
-                    color: Qt.darker(root.contentForeground, 1.9)
+                    color: root.quiet(0.50)
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.caption
                   }
@@ -949,8 +996,8 @@ Panel {
                         anchors.verticalCenterOffset: modelData.hasEvent ? -Style.space(3) : 0
                         text: modelData.day
                         color: modelData.inMonth
-                          ? (modelData.weekend ? Qt.darker(root.contentForeground, 1.45) : root.contentForeground)
-                          : Qt.darker(root.contentForeground, 2.2)
+                          ? (modelData.weekend ? root.quiet(0.70) : root.contentForeground)
+                          : root.quiet(0.40)
                         font.family: root.contentFontFamily
                         font.pixelSize: Style.font.body
                         font.bold: modelData.today
@@ -1024,7 +1071,7 @@ Panel {
                 width: Style.space(130)
                 horizontalAlignment: Text.AlignHCenter
                 text: Qt.formatDate(root.viewDate, "MMMM yyyy").toUpperCase()
-                color: Qt.darker(root.contentForeground, 1.4)
+                color: root.quiet(0.72)
                 font.family: root.contentFontFamily
                 font.pixelSize: Style.font.body
                 font.letterSpacing: 1
@@ -1068,7 +1115,7 @@ Panel {
             Text {
               width: parent.width
               text: Qt.formatDate(root.selectedDate, "dddd d MMMM").toUpperCase()
-              color: Qt.darker(root.contentForeground, 1.4)
+              color: root.quiet(0.72)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               font.letterSpacing: 1
@@ -1122,7 +1169,7 @@ Panel {
                   border.width: Style.spacing.hairline
                   border.color: joinHover.hovered
                     ? "transparent"
-                    : Qt.darker(root.contentForeground, 2.0)
+                    : root.quiet(0.46)
 
                   HoverHandler {
                     id: joinHover
@@ -1140,7 +1187,7 @@ Panel {
                     id: joinLabel
                     anchors.centerIn: parent
                     text: qsTr("Join")
-                    color: joinHover.hovered ? Color.background : Qt.darker(root.contentForeground, 1.4)
+                    color: joinHover.hovered ? Color.background : root.quiet(0.72)
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.caption
                   }
@@ -1178,7 +1225,7 @@ Panel {
                   text: eventRow.modelData.allDay
                     ? qsTr("All day")
                     : Qt.formatDateTime(new Date(eventRow.modelData.start), root.eventTimeFormat)
-                  color: Qt.darker(root.contentForeground, eventRow.declined ? 2.2 : 1.5)
+                  color: root.quiet(eventRow.declined ? 0.40 : 0.68)
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
                   font.strikeout: eventRow.declined
@@ -1191,9 +1238,10 @@ Panel {
 
                   Text {
                     width: parent.width
+                    textFormat: Text.PlainText
                     text: eventRow.modelData.title
                     color: eventRow.declined
-                      ? Qt.darker(root.contentForeground, 2.0)
+                      ? root.quiet(0.46)
                       : root.contentForeground
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.bodySmall
@@ -1204,12 +1252,13 @@ Panel {
                   Text {
                     width: parent.width
                     visible: text !== ""
+                    textFormat: Text.PlainText
                     text: {
                       if (eventRow.declined) return qsTr("Declined")
                       if (Model.isOutOfOffice(eventRow.modelData)) return qsTr("Out of office")
                       return eventRow.modelData.location
                     }
-                    color: Qt.darker(root.contentForeground, 1.9)
+                    color: root.quiet(0.50)
                     font.family: root.contentFontFamily
                     font.pixelSize: Style.font.caption
                     elide: Text.ElideRight
@@ -1227,7 +1276,7 @@ Panel {
               visible: root.selectedEvents.length === 0
               color: root.syncState === "missing" && emptyHover.hovered
                 ? Style.hoverStateColor(root.contentForeground, Color.accent)
-                : Qt.darker(root.contentForeground, 1.9)
+                : root.quiet(0.50)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
