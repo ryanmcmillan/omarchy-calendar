@@ -15,6 +15,8 @@ NOW = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
 
 
 class FakeGws:
+    SOURCE_NAME = "gws"
+
     def __init__(self, calendars=None, events=None, raises=None):
         self._calendars = calendars if calendars is not None else [
             {"id": "a@example.com", "name": "Personal", "color": "#f83a22"}
@@ -49,6 +51,9 @@ class FakeGws:
         if isinstance(self._events, dict):
             return self._events.get(calendar_id, [])
         return self._events
+
+    def auth_hint(self, cfg):
+        return "run gws auth login"
 
 
 class TestWriteAtomic(unittest.TestCase):
